@@ -1,0 +1,26 @@
+apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata:
+  name: mini-wms-ingress
+  namespace: mini-wms
+  annotations:
+    nginx.ingress.kubernetes.io/proxy-body-size:       "10m"
+    nginx.ingress.kubernetes.io/proxy-read-timeout:    "300"
+    nginx.ingress.kubernetes.io/proxy-connect-timeout: "60"
+spec:
+  ingressClassName: nginx
+  tls:
+    - hosts:
+        - mini-wms.local
+      secretName: mini-wms-tls
+  rules:
+    - host: mini-wms.local
+      http:
+        paths:
+          - path: /
+            pathType: Prefix
+            backend:
+              service:
+                name: mini-wms-nginx
+                port:
+                  number: 80

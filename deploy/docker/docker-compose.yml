@@ -1,0 +1,173 @@
+name: mini-wms-v2
+
+services:
+
+  # ─── PHP-FPM Application ────────────────────────────────────────────────────
+  app:
+    build:
+      context: ../..
+      dockerfile: deploy/docker/Dockerfile
+    image: mini-wms:v2
+    container_name: mini-wms-app
+    restart: unless-stopped
+    environment:
+      DB_HOST:     db
+      DB_PORT:     3306
+      DB_NAME:     mini_wms
+      DB_USER:     root
+      DB_PASS:     root123
+      REDIS_HOST:  redis
+      REDIS_PORT:  6379
+      APP_ENV:     production
+      APP_SECRET:  mini_wms_v2_secret_32chars_prod!
+      LOG_PATH:    /var/www/html/logs/app.log
+    volumes:
+      - ../../logs:/var/www/html/logs
+    depends_on:
+      db:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "pgrep", "php-fpm"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 40s
+    networks:
+      - mini-wms-net
+
+  # ─── Nginx Reverse Proxy ────────────────────────────────────────────────────
+  nginx:
+    image: nginx:1.25-alpine
+    container_name: mini-wms-nginx
+    restart: unless-stopped
+    ports:
+      - "8080:80"
+    volumes:
+      - ../..:/var/www/html:ro
+      - ./nginx.conf:/etc/nginx/conf.d/default.conf:ro
+    depends_on:
+      app:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "curl", "-sf", "http://127.0.0.1/health.php"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 30s
+    networks:
+      - mini-wms-net
+
+  # ─── MySQL 8 ────────────────────────────────────────────────────────────────
+  db:
+    image: mysql:8.0
+    container_name: mini-wms-db
+    restart: unless-stopped
+    environment:
+      MYSQL_ROOT_PASSWORD: root123
+      MYSQL_DATABASE:      mini_wms
+    ports:
+      - "3306:3306"
+    volumes:
+      - db_data:/var/lib/mysql
+      - ../../sql/schema.sql:/docker-entrypoint-initdb.d/01_schema.sql:ro
+      - ../../sql/seed.sql:/docker-entrypoint-initdb.d/02_seed.sql:ro
+    command: >
+      --character-set-server=utf8mb4
+      --collation-server=utf8mb4_unicode_ci
+      --default-authentication-plugin=mysql_native_password
+    healthcheck:
+      test: ["CMD", "mysqladmin", "ping", "-h", "127.0.0.1", "-uroot", "-proot123"]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+      start_period: 30s
+    networks:
+      - mini-wms-net
+
+  # ─── Redis ──────────────────────────────────────────────────────────────────
+  redis:
+    image: redis:7-alpine
+    container_name: mini-wms-redis
+    restart: unless-stopped
+    ports:
+      - "6379:6379"
+    volumes:
+      - redis_data:/data
+    command: redis-server --save 60 1 --loglevel warning
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 10s
+    networks:
+      - mini-wms-net
+
+  # ─── Prometheus ─────────────────────────────────────────────────────────────
+  prometheus:
+    image: prom/prometheus:v2.48.0
+    container_name: mini-wms-prometheus
+    restart: unless-stopped
+    ports:
+      - "9090:9090"
+    volumes:
+      - ../monitoring/prometheus.yml:/etc/prometheus/prometheus.yml:ro
+      - prometheus_data:/prometheus
+    command:
+      - '--config.file=/etc/prometheus/prometheus.yml'
+      - '--storage.tsdb.path=/prometheus'
+      - '--storage.tsdb.retention.time=7d'
+      - '--web.enable-lifecycle'
+    networks:
+      - mini-wms-net
+
+  # ─── Grafana ────────────────────────────────────────────────────────────────
+  grafana:
+    image: grafana/grafana:10.2.2
+    container_name: mini-wms-grafana
+    restart: unless-stopped
+    ports:
+      - "3000:3000"
+    environment:
+      GF_SECURITY_ADMIN_USER:     admin
+      GF_SECURITY_ADMIN_PASSWORD: admin123
+      GF_USERS_ALLOW_SIGN_UP:     "false"
+      GF_DASHBOARDS_DEFAULT_HOME_DASHBOARD_PATH: /var/lib/grafana/dashboards/mini-wms.json
+    volumes:
+      - grafana_data:/var/lib/grafana
+      - ../monitoring/grafana-provisioning:/etc/grafana/provisioning:ro
+      - ../monitoring/grafana-dashboard.json:/var/lib/grafana/dashboards/mini-wms.json:ro
+    depends_on:
+      - prometheus
+    networks:
+      - mini-wms-net
+
+  # ─── cAdvisor ───────────────────────────────────────────────────────────────
+  cadvisor:
+    image: gcr.io/cadvisor/cadvisor:v0.47.2
+    container_name: mini-wms-cadvisor
+    restart: unless-stopped
+    ports:
+      - "8081:8080"
+    volumes:
+      - /:/rootfs:ro
+      - /var/run:/var/run:ro
+      - /sys:/sys:ro
+      - /var/lib/docker/:/var/lib/docker:ro
+    privileged: true
+    networks:
+      - mini-wms-net
+
+# ─── Networks ──────────────────────────────────────────────────────────────────
+networks:
+  mini-wms-net:
+    driver: bridge
+
+# ─── Volumes ───────────────────────────────────────────────────────────────────
+volumes:
+  db_data:
+  redis_data:
+  prometheus_data:
+  grafana_data:

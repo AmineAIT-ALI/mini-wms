@@ -1,0 +1,66 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: mini-wms-nginx
+  namespace: mini-wms
+  labels:
+    app:     mini-wms-nginx
+    version: "2.0.0"
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: mini-wms-nginx
+  template:
+    metadata:
+      labels:
+        app: mini-wms-nginx
+    spec:
+      # Copy app files from the app image to a shared volume
+      initContainers:
+        - name: copy-app-files
+          image: mini-wms:v2
+          imagePullPolicy: IfNotPresent
+          command: ["sh", "-c", "cp -r /var/www/html/. /webroot/"]
+          volumeMounts:
+            - name: webroot
+              mountPath: /webroot
+      containers:
+        - name: nginx
+          image: nginx:1.25-alpine
+          imagePullPolicy: IfNotPresent
+          ports:
+            - containerPort: 80
+          readinessProbe:
+            httpGet:
+              path: /health.php
+              port: 80
+            initialDelaySeconds: 20
+            periodSeconds: 10
+            failureThreshold: 3
+          livenessProbe:
+            httpGet:
+              path: /health.php
+              port: 80
+            initialDelaySeconds: 40
+            periodSeconds: 30
+            failureThreshold: 3
+          resources:
+            requests:
+              memory: "64Mi"
+              cpu:    "50m"
+            limits:
+              memory: "128Mi"
+              cpu:    "200m"
+          volumeMounts:
+            - name: nginx-config
+              mountPath: /etc/nginx/conf.d/default.conf
+              subPath: nginx.conf
+            - name: webroot
+              mountPath: /var/www/html
+      volumes:
+        - name: nginx-config
+          configMap:
+            name: mini-wms-nginx-config
+        - name: webroot
+          emptyDir: {}

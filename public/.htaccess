@@ -1,0 +1,18 @@
+Options -Indexes
+
+# Security headers
+Header always set X-Frame-Options "DENY"
+Header always set X-Content-Type-Options "nosniff"
+Header always set Referrer-Policy "strict-origin-when-cross-origin"
+Header always set X-XSS-Protection "1; mode=block"
+
+# Custom error pages
+ErrorDocument 404 /public/404.php
+ErrorDocument 500 /public/500.php
+
+RewriteEngine On
+
+# Send requests to index if file/dir does not exist
+RewriteCond %{REQUEST_FILENAME} !-f
+RewriteCond %{REQUEST_FILENAME} !-d
+RewriteRule ^(.*)$ index.php?route=$1 [QSA,L]

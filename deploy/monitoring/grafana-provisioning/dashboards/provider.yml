@@ -1,0 +1,11 @@
+apiVersion: 1
+
+providers:
+  - name:            'Mini WMS'
+    orgId:           1
+    folder:          'Mini WMS'
+    type:            file
+    disableDeletion: false
+    editable:        true
+    options:
+      path: /var/lib/grafana/dashboards

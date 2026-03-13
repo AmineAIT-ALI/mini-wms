@@ -1,0 +1,62 @@
+## ─── Nginx (external entry point) ────────────────────────────────────────────
+apiVersion: v1
+kind: Service
+metadata:
+  name: mini-wms-nginx
+  namespace: mini-wms
+spec:
+  selector:
+    app: mini-wms-nginx
+  ports:
+    - name: http
+      port: 80
+      targetPort: 80
+  type: ClusterIP
+
+---
+## ─── PHP-FPM App ─────────────────────────────────────────────────────────────
+apiVersion: v1
+kind: Service
+metadata:
+  name: mini-wms-app
+  namespace: mini-wms
+spec:
+  selector:
+    app: mini-wms-app
+  ports:
+    - name: fpm
+      port: 9000
+      targetPort: 9000
+  type: ClusterIP
+
+---
+## ─── MySQL ───────────────────────────────────────────────────────────────────
+apiVersion: v1
+kind: Service
+metadata:
+  name: mini-wms-mysql
+  namespace: mini-wms
+spec:
+  selector:
+    app: mini-wms-mysql
+  ports:
+    - name: mysql
+      port: 3306
+      targetPort: 3306
+  type: ClusterIP
+
+---
+## ─── Redis ───────────────────────────────────────────────────────────────────
+apiVersion: v1
+kind: Service
+metadata:
+  name: mini-wms-redis
+  namespace: mini-wms
+spec:
+  selector:
+    app: mini-wms-redis
+  ports:
+    - name: redis
+      port: 6379
+      targetPort: 6379
+  type: ClusterIP

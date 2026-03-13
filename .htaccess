@@ -1,0 +1,6 @@
+Options -Indexes
+RewriteEngine On
+
+# Redirect everything to public/ except existing files
+RewriteCond %{REQUEST_URI} !^/public/
+RewriteRule ^(.*)$ public/$1 [L]

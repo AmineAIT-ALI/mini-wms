@@ -1,0 +1,35 @@
+global:
+  scrape_interval:     15s
+  evaluation_interval: 15s
+  external_labels:
+    monitor: 'mini-wms'
+
+# ─── Alerting ─────────────────────────────────────────────────────────────────
+# alerting:
+#   alertmanagers:
+#     - static_configs:
+#         - targets: ['alertmanager:9093']
+
+# ─── Scrape configs ───────────────────────────────────────────────────────────
+scrape_configs:
+
+  # Prometheus self-monitoring
+  - job_name: 'prometheus'
+    static_configs:
+      - targets: ['localhost:9090']
+
+  # cAdvisor – container metrics (CPU, RAM, network, disk)
+  - job_name: 'cadvisor'
+    scrape_interval: 10s
+    static_configs:
+      - targets: ['cadvisor:8080']
+    metrics_path: /metrics
+
+  # Mini WMS app – custom PHP metrics endpoint
+  - job_name: 'mini-wms-app'
+    scrape_interval: 15s
+    metrics_path: /metrics.php
+    static_configs:
+      - targets: ['nginx:80']
+    honor_labels: true
+

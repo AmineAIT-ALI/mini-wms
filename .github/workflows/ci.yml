@@ -1,0 +1,269 @@
+name: CI – Mini WMS
+
+on:
+  push:
+    branches: [main, develop]
+  pull_request:
+    branches: [main, develop]
+
+permissions:
+  contents: read
+  security-events: write
+
+env:
+  IMAGE_NAME: mini-wms
+  IMAGE_TAG:  v2
+
+jobs:
+  # ─── PHP Lint ────────────────────────────────────────────────────────────────
+  lint:
+    name: PHP Lint
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup PHP 8.4
+        uses: shivammathur/setup-php@v2
+        with:
+          php-version: "8.4"
+          tools: parallel-lint
+
+      - name: Lint PHP files
+        run: parallel-lint --no-colors --blame app/ public/
+
+  # ─── Docker Build ────────────────────────────────────────────────────────────
+  build:
+    name: Docker Build
+    runs-on: ubuntu-latest
+    needs: lint
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Build Docker image
+        uses: docker/build-push-action@v5
+        with:
+          context: .
+          file: deploy/docker/Dockerfile
+          push: false
+          tags: ${{ env.IMAGE_NAME }}:${{ env.IMAGE_TAG }}
+          cache-from: type=gha
+          cache-to:   type=gha,mode=max
+          outputs: type=docker,dest=/tmp/mini-wms.tar
+
+      - name: Upload image artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: docker-image
+          path: /tmp/mini-wms.tar
+          retention-days: 1
+
+  # ─── Trivy Security Scan ─────────────────────────────────────────────────────
+  security:
+    name: Trivy Security Scan
+    runs-on: ubuntu-latest
+    needs: build
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Download image artifact
+        uses: actions/download-artifact@v4
+        with:
+          name: docker-image
+          path: /tmp
+
+      - name: Load Docker image
+        run: docker load --input /tmp/mini-wms.tar
+
+      - name: Run Trivy vulnerability scan (image)
+        uses: aquasecurity/trivy-action@0.24.0
+        with:
+          image-ref:    ${{ env.IMAGE_NAME }}:${{ env.IMAGE_TAG }}
+          format:       table
+          exit-code:    1
+          severity:     CRITICAL,HIGH
+          ignore-unfixed: true
+
+      - name: Run Trivy filesystem scan (source code)
+        if: always()
+        uses: aquasecurity/trivy-action@0.24.0
+        with:
+          scan-type:    fs
+          scan-ref:     .
+          format:       sarif
+          output:       trivy-results.sarif
+          exit-code:    0
+
+      - name: Upload SARIF results to GitHub Security tab
+        uses: github/codeql-action/upload-sarif@v4
+        if: always()
+        with:
+          sarif_file: trivy-results.sarif
+
+  # ─── Integration Test ────────────────────────────────────────────────────────
+  # MySQL and Redis start as GitHub Actions services (before job steps),
+  # so they are ready by the time the app container starts. No startup chain.
+  integration:
+    name: Integration Test
+    runs-on: ubuntu-latest
+    needs: build
+
+    services:
+      db:
+        image: mysql:8.0
+        env:
+          MYSQL_ROOT_PASSWORD: root123
+          MYSQL_DATABASE:      mini_wms
+        ports:
+          - 3306:3306
+        options: >-
+          --health-cmd "mysqladmin ping -h127.0.0.1 -uroot -proot123 --silent"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 30
+      redis:
+        image: redis:7-alpine
+        ports:
+          - 6379:6379
+        options: >-
+          --health-cmd "redis-cli ping"
+          --health-interval 5s
+          --health-timeout 3s
+          --health-retries 10
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Download image artifact
+        uses: actions/download-artifact@v4
+        with:
+          name: docker-image
+          path: /tmp
+
+      - name: Load Docker image
+        run: docker load --input /tmp/mini-wms.tar
+
+      - name: Start app and nginx
+        run: |
+          docker network create wms-ci
+
+          # Join the GitHub service containers to our bridge network so the app
+          # can reach them via Docker DNS (db:3306, redis:6379) — avoids host-gateway issues.
+          docker network connect --alias db    wms-ci \
+            $(docker ps -q --filter "ancestor=mysql:8.0")
+          docker network connect --alias redis wms-ci \
+            $(docker ps -q --filter "ancestor=redis:7-alpine")
+
+          docker run -d --name wms-app \
+            --network wms-ci --network-alias app \
+            -e DB_HOST=db \
+            -e DB_PORT=3306 \
+            -e DB_NAME=mini_wms \
+            -e DB_USER=root \
+            -e DB_PASS=root123 \
+            -e REDIS_HOST=redis \
+            -e REDIS_PORT=6379 \
+            -e APP_ENV=production \
+            -e APP_SECRET=ci_test_secret_not_for_production_x \
+            -e LOG_PATH=/tmp/app.log \
+            mini-wms:v2
+          docker run -d --name wms-nginx \
+            --network wms-ci \
+            -p 8080:80 \
+            -v ${{ github.workspace }}:/var/www/html:ro \
+            -v ${{ github.workspace }}/deploy/docker/nginx.conf:/etc/nginx/conf.d/default.conf:ro \
+            nginx:1.25-alpine
+          echo "Waiting for app health..."
+          timeout 90 bash -c \
+            'until curl -sf http://localhost:8080/health.php | grep -q "\"ok\": true"; do sleep 3; done'
+
+      - name: Health check
+        run: |
+          response=$(curl -sf http://localhost:8080/health.php)
+          echo "Health response: $response"
+          echo "$response" | python3 -c "import sys,json; d=json.load(sys.stdin); assert d['ok'], 'Health check failed'; assert d['db'], 'DB check failed'; print('✓ Health check passed')"
+
+      - name: Metrics endpoint
+        run: |
+          metrics=$(curl -sf http://localhost:8080/metrics.php)
+          echo "$metrics"
+          echo "$metrics" | grep -q "mini_wms_up 1" && echo "✓ Metrics endpoint OK"
+
+      - name: Smoke test pages
+        run: |
+          HTTP=$(curl -o /dev/null -sw "%{http_code}" http://localhost:8080/login.php)
+          [ "$HTTP" = "200" ] && echo "✓ Login page: HTTP 200" || (echo "✗ Login page: HTTP $HTTP" && exit 1)
+
+      - name: Print logs on failure
+        if: failure()
+        run: |
+          docker logs wms-app 2>&1 || true
+          docker logs wms-nginx 2>&1 || true
+
+      - name: Tear down
+        if: always()
+        run: |
+          docker stop wms-app wms-nginx 2>/dev/null || true
+          docker rm   wms-app wms-nginx 2>/dev/null || true
+          docker network rm wms-ci 2>/dev/null || true
+
+  # ─── Push to Registry (main branch only) ─────────────────────────────────────
+  push:
+    name: Push to Registry
+    runs-on: ubuntu-latest
+    needs: [security, integration]
+    if: github.ref == 'refs/heads/main' && github.event_name == 'push'
+
+    steps:
+      - name: Check credentials
+        id: creds
+        run: |
+          if [ -n "${{ secrets.DOCKERHUB_USERNAME }}" ] && [ -n "${{ secrets.DOCKERHUB_TOKEN }}" ]; then
+            echo "available=true" >> $GITHUB_OUTPUT
+          else
+            echo "available=false" >> $GITHUB_OUTPUT
+            echo "DockerHub credentials not configured — skipping push."
+          fi
+
+      - name: Checkout
+        if: steps.creds.outputs.available == 'true'
+        uses: actions/checkout@v4
+
+      - name: Download image artifact
+        if: steps.creds.outputs.available == 'true'
+        uses: actions/download-artifact@v4
+        with:
+          name: docker-image
+          path: /tmp
+
+      - name: Load Docker image
+        if: steps.creds.outputs.available == 'true'
+        run: docker load --input /tmp/mini-wms.tar
+
+      - name: Log in to Docker Hub
+        if: steps.creds.outputs.available == 'true'
+        uses: docker/login-action@v3
+        with:
+          username: ${{ secrets.DOCKERHUB_USERNAME }}
+          password: ${{ secrets.DOCKERHUB_TOKEN }}
+
+      - name: Tag and push
+        if: steps.creds.outputs.available == 'true'
+        run: |
+          SHORT_SHA="${GITHUB_SHA::7}"
+          docker tag ${{ env.IMAGE_NAME }}:${{ env.IMAGE_TAG }} \
+            ${{ secrets.DOCKERHUB_USERNAME }}/${{ env.IMAGE_NAME }}:${{ env.IMAGE_TAG }}
+          docker tag ${{ env.IMAGE_NAME }}:${{ env.IMAGE_TAG }} \
+            ${{ secrets.DOCKERHUB_USERNAME }}/${{ env.IMAGE_NAME }}:${SHORT_SHA}
+          docker push ${{ secrets.DOCKERHUB_USERNAME }}/${{ env.IMAGE_NAME }}:${{ env.IMAGE_TAG }}
+          docker push ${{ secrets.DOCKERHUB_USERNAME }}/${{ env.IMAGE_NAME }}:${SHORT_SHA}
+          echo "✓ Pushed: ${{ env.IMAGE_NAME }}:v2 and :${SHORT_SHA}"

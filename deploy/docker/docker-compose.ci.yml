@@ -1,0 +1,29 @@
+# CI override: disable healthcheck dependencies and skip SQL init scripts.
+# MySQL 8 first-boot with schema+seed takes 5+ min on cold runners.
+# Without init scripts it starts in ~60s. health.php verifies DB connectivity.
+services:
+  db:
+    volumes:
+      - db_data:/var/lib/mysql
+    healthcheck:
+      disable: true
+
+  redis:
+    healthcheck:
+      disable: true
+
+  app:
+    depends_on:
+      db:
+        condition: service_started
+      redis:
+        condition: service_started
+    healthcheck:
+      disable: true
+
+  nginx:
+    depends_on:
+      app:
+        condition: service_started
+    healthcheck:
+      disable: true

@@ -1,0 +1,75 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: mini-wms-app
+  namespace: mini-wms
+  labels:
+    app:     mini-wms-app
+    version: "2.0.0"
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: mini-wms-app
+  template:
+    metadata:
+      labels:
+        app: mini-wms-app
+    spec:
+      containers:
+        - name: app
+          image: mini-wms:v2
+          imagePullPolicy: IfNotPresent
+          envFrom:
+            - configMapRef:
+                name: mini-wms-config
+          env:
+            - name: DB_PASS
+              valueFrom:
+                secretKeyRef:
+                  name: mini-wms-secret
+                  key: DB_PASS
+            - name: APP_SECRET
+              valueFrom:
+                secretKeyRef:
+                  name: mini-wms-secret
+                  key: APP_SECRET
+          ports:
+            - containerPort: 9000
+          readinessProbe:
+            exec:
+              command:
+                - php
+                - -r
+                - >-
+                  try {
+                    new PDO(
+                      'mysql:host='.getenv('DB_HOST').';dbname='.getenv('DB_NAME'),
+                      getenv('DB_USER'),
+                      getenv('DB_PASS'),
+                      [PDO::ATTR_TIMEOUT => 2]
+                    );
+                    exit(0);
+                  } catch (Exception $e) { exit(1); }
+            initialDelaySeconds: 15
+            periodSeconds: 10
+            failureThreshold: 3
+          livenessProbe:
+            exec:
+              command: ["pgrep", "php-fpm"]
+            initialDelaySeconds: 30
+            periodSeconds: 20
+            failureThreshold: 3
+          resources:
+            requests:
+              memory: "128Mi"
+              cpu:    "100m"
+            limits:
+              memory: "256Mi"
+              cpu:    "500m"
+          volumeMounts:
+            - name: logs
+              mountPath: /var/www/html/logs
+      volumes:
+        - name: logs
+          emptyDir: {}
